@@ -1,0 +1,21 @@
+# Ignore data folder
+*.npz
+*.npy
+*.DS_Store
+
+# Ignore log files and log directory
+log/
+log_pretrain/
+*.log
+
+# Ignore temporary/cache files
+*.out
+*.pyc
+
+# Ignore vscode settings
+.vscode/
+
+data/
+
+# Ignore doc files
+docs/
