@@ -156,9 +156,8 @@ class BaseDataset(Dataset):
                 f"Invalid label values {invalid_values}, expected range [0, {num_classes - 1}]"
             )
 
-        one_hot = np.eye(num_classes, dtype=np.float32)[label.reshape(-1)]
-        one_hot = one_hot.reshape(label.shape + (num_classes,))
-        one_hot = np.transpose(one_hot, (3, 0, 1, 2))  # [num_classes, H, W, D]
+        one_hot = np.zeros((num_classes,) + label.shape, dtype=np.float32)
+        np.put_along_axis(one_hot, label[None, ...], 1.0, axis=0)
         return one_hot
 
     def _get_random_mask(self, mask_array: np.ndarray) -> np.ndarray:

@@ -13,6 +13,7 @@ from source.config import TrainingConfig
 class LoaderKwargs(TypedDict, total=False):
     pin_memory: bool
     num_workers: int
+    generator: torch.Generator
     worker_init_fn: Callable[[int], None]
     persistent_workers: bool
     prefetch_factor: int
@@ -25,10 +26,11 @@ def _seed_worker(_worker_id: int) -> None:
     torch.set_num_threads(1)
 
 
-def _build_loader_kwargs(args: TrainingConfig) -> LoaderKwargs:
+def _build_loader_kwargs(args: TrainingConfig, generator: torch.Generator) -> LoaderKwargs:
     kwargs: LoaderKwargs = {
         "pin_memory": True,
         "num_workers": args.num_workers,
+        "generator": generator,
     }
     if args.num_workers > 0:
         kwargs["worker_init_fn"] = _seed_worker
@@ -85,7 +87,9 @@ def setup_dataloader(args: TrainingConfig) -> tuple[DataLoader, DataLoader, Data
         "test": BratsTestDataset(root, test_file, args.num_classes),
     }
 
-    dataloader_kwargs = _build_loader_kwargs(args)
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(int(args.seed))
+    dataloader_kwargs = _build_loader_kwargs(args, generator=loader_generator)
 
     train_loader = DataLoader(
         datasets['train'], batch_size=args.batch_size, shuffle=True, **dataloader_kwargs

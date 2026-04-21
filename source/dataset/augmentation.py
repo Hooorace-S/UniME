@@ -1,4 +1,6 @@
 import random
+import warnings
+from collections import OrderedDict
 from typing import Sequence
 
 import numpy as np
@@ -86,6 +88,14 @@ class Compose(Base):
             result = op.tf(result, k)
         return result
 
+    def __call__(
+        self, img: TransformInput, dim: int = 3, reuse: bool = False
+    ) -> TransformInput:
+        result = img
+        for op in self.ops:
+            result = op(result, dim=dim, reuse=reuse)
+        return result
+
     def __str__(self) -> str:
         ops = ', '.join([str(op) for op in self.ops])
         return f'Compose([{ops}])'
@@ -116,6 +126,251 @@ class RandCrop3D(Base):
 
     def __str__(self) -> str:
         return f'RandCrop3D({self.size})'
+
+
+class RandCrop3DByPosNegLabel(RandCrop3D):
+    """Randomly crop a 3D volume using WT-aware pos/neg label sampling."""
+
+    def __init__(
+        self,
+        size: int | tuple[int, int, int] | list[int],
+        pos: float = 1.0,
+        neg: float = 1.0,
+        image_threshold: float | None = None,
+        allow_smaller: bool = False,
+        fg_cache_size: int = 32,
+        bg_sample_attempts: int = 512,
+        bg_fallback_chunk_voxels: int = 1_000_000,
+    ) -> None:
+        super().__init__(size=size)
+        if pos < 0 or neg < 0:
+            raise ValueError(f"pos and neg must be nonnegative, got pos={pos} neg={neg}.")
+        if pos + neg == 0:
+            raise ValueError("Incompatible values: pos=0 and neg=0.")
+        self.requested_size = self.size.copy()
+        self.pos_ratio = pos / (pos + neg)
+        self.image_threshold = image_threshold
+        self.allow_smaller = bool(allow_smaller)
+        self.fg_cache_size = max(0, int(fg_cache_size))
+        self.bg_sample_attempts = max(1, int(bg_sample_attempts))
+        self.bg_fallback_chunk_voxels = max(1, int(bg_fallback_chunk_voxels))
+        self._fg_cache: OrderedDict[tuple[str, tuple[int, ...], str], np.ndarray] = OrderedDict()
+        self._warned: set[str] = set()
+
+    def _resolve_crop_size(self, shape: Sequence[int]) -> list[int]:
+        crop_size = self.requested_size.copy()
+        for idx, (requested, actual) in enumerate(zip(crop_size, shape)):
+            if actual < requested:
+                if not self.allow_smaller:
+                    raise ValueError(
+                        "The size of the proposed random crop ROI is larger than the image size, "
+                        f"got ROI size {tuple(self.requested_size)} and label image size {tuple(shape)} respectively."
+                    )
+                crop_size[idx] = actual
+        return crop_size
+
+    def _center_bounds(self, shape: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
+        crop_size = np.asarray(self.size, dtype=np.int64)
+        spatial_shape = np.asarray(shape, dtype=np.int64)
+        valid_start = np.floor_divide(crop_size, 2)
+        valid_end = np.subtract(spatial_shape + 1, crop_size / 2.0).astype(np.int64)
+        valid_end = np.maximum(valid_end, valid_start + 1)
+        return valid_start, valid_end
+
+    def _correct_crop_center(self, center: Sequence[int], shape: Sequence[int]) -> list[int]:
+        valid_start, valid_end = self._center_bounds(shape)
+        return [
+            int(min(max(coord, start), end - 1))
+            for coord, start, end in zip(center, valid_start, valid_end)
+        ]
+
+    @staticmethod
+    def _unravel_index3(flat_index: int, shape: Sequence[int]) -> list[int]:
+        flat_index = int(flat_index)
+        width_depth = int(shape[1]) * int(shape[2])
+        h = flat_index // width_depth
+        rem = flat_index - h * width_depth
+        w = rem // int(shape[2])
+        d = rem - w * int(shape[2])
+        return [int(h), int(w), int(d)]
+
+    def _label_cache_key(
+        self,
+        label: np.ndarray,
+    ) -> tuple[str, tuple[int, ...], str] | None:
+        filename = getattr(label, "filename", None)
+        if filename is None:
+            return None
+        return (str(filename), tuple(int(x) for x in label.shape), str(label.dtype))
+
+    def _foreground_indices(self, label: np.ndarray) -> np.ndarray:
+        key = self._label_cache_key(label)
+        if key is not None:
+            cached = self._fg_cache.pop(key, None)
+            if cached is not None:
+                self._fg_cache[key] = cached
+                return cached
+
+        fg_indices = np.flatnonzero(label != 0)
+        if label.size <= np.iinfo(np.uint32).max:
+            fg_indices = fg_indices.astype(np.uint32, copy=False)
+
+        if key is not None and self.fg_cache_size > 0:
+            self._fg_cache[key] = fg_indices
+            while len(self._fg_cache) > self.fg_cache_size:
+                self._fg_cache.popitem(last=False)
+
+        return fg_indices
+
+    def _passes_image_threshold(
+        self,
+        image: np.ndarray,
+        center: tuple[int, int, int],
+    ) -> bool:
+        if self.image_threshold is None:
+            return True
+        return bool(np.any(image[center] > self.image_threshold))
+
+    def _sample_positive_center(
+        self,
+        fg_indices: np.ndarray,
+        shape: Sequence[int],
+    ) -> list[int]:
+        flat_index = fg_indices[random.randrange(fg_indices.size)]
+        center = self._unravel_index3(int(flat_index), shape)
+        return self._correct_crop_center(center, shape)
+
+    def _sample_background_center_fast(
+        self,
+        image: np.ndarray,
+        label: np.ndarray,
+        shape: Sequence[int],
+    ) -> list[int] | None:
+        valid_start, valid_end = self._center_bounds(shape)
+        for _ in range(self.bg_sample_attempts):
+            center = tuple(
+                random.randrange(int(valid_start[idx]), int(valid_end[idx]))
+                for idx in range(3)
+            )
+            if label[center] != 0:
+                continue
+            if not self._passes_image_threshold(image, center):
+                continue
+            return [int(coord) for coord in center]
+        return None
+
+    def _sample_background_flat_index_chunked(
+        self,
+        image: np.ndarray,
+        label: np.ndarray,
+    ) -> int | None:
+        flat_label = label.reshape(-1)
+        flat_image = None
+        if self.image_threshold is not None:
+            if image.ndim != 4:
+                raise ValueError(
+                    "image_threshold requires image with shape (H, W, D, C), "
+                    f"got image shape {image.shape}."
+                )
+            flat_image = image.reshape((-1, image.shape[-1]))
+
+        selected: int | None = None
+        seen = 0
+        for start in range(0, label.size, self.bg_fallback_chunk_voxels):
+            end = min(start + self.bg_fallback_chunk_voxels, label.size)
+            mask = np.asarray(flat_label[start:end]) == 0
+            if flat_image is not None:
+                mask &= np.any(
+                    np.asarray(flat_image[start:end]) > self.image_threshold,
+                    axis=-1,
+                )
+            count = int(mask.sum())
+            if count == 0:
+                continue
+            if random.randrange(seen + count) < count:
+                local_indices = np.flatnonzero(mask)
+                selected = start + int(local_indices[random.randrange(count)])
+            seen += count
+        return selected
+
+    def _sample_background_center_exact(
+        self,
+        image: np.ndarray,
+        label: np.ndarray,
+        shape: Sequence[int],
+    ) -> list[int] | None:
+        flat_index = self._sample_background_flat_index_chunked(image, label)
+        if flat_index is None:
+            return None
+        center = self._unravel_index3(flat_index, shape)
+        return self._correct_crop_center(center, shape)
+
+    def _warn_once(self, code: str, message: str) -> None:
+        if code in self._warned:
+            return
+        warnings.warn(message, UserWarning, stacklevel=3)
+        self._warned.add(code)
+
+    def _sample_start_from_pair(self, image: np.ndarray, label: np.ndarray) -> None:
+        if label.ndim != 3:
+            raise ValueError(f"Expected label with shape (H, W, D), got {label.shape}.")
+        if image.shape[:3] != label.shape[:3]:
+            raise ValueError(
+                "Image and label spatial shapes must match, "
+                f"got image shape {image.shape} and label shape {label.shape}."
+            )
+
+        shape = tuple(int(x) for x in label.shape[:3])
+        self.size = self._resolve_crop_size(shape)
+        fg_indices = self._foreground_indices(label)
+        has_fg = fg_indices.size > 0
+        want_pos = random.random() < self.pos_ratio
+
+        center: list[int] | None = None
+        if want_pos and has_fg:
+            center = self._sample_positive_center(fg_indices, shape)
+        else:
+            if want_pos and not has_fg:
+                self._warn_once(
+                    "no_foreground",
+                    "No foreground voxels found; falling back to background sampling.",
+                )
+            center = self._sample_background_center_fast(image, label, shape)
+            if center is None:
+                center = self._sample_background_center_exact(image, label, shape)
+            if center is None:
+                if has_fg:
+                    self._warn_once(
+                        "no_background",
+                        "No valid background voxels found; falling back to foreground sampling.",
+                    )
+                    center = self._sample_positive_center(fg_indices, shape)
+                else:
+                    raise ValueError("No sampling location available.")
+
+        assert center is not None
+        self.start = [coord - size // 2 for coord, size in zip(center, self.size)]
+
+    def sample(self, *shape: int) -> list[int]:
+        self.size = self._resolve_crop_size(shape)
+        return super().sample(*shape)
+
+    def __call__(
+        self, img: TransformInput, dim: int = 3, reuse: bool = False
+    ) -> TransformInput:
+        if reuse or isinstance(img, np.ndarray):
+            return super().__call__(img, dim=dim, reuse=reuse)
+
+        image, label = img
+        self._sample_start_from_pair(image=image, label=label)
+        return [self.tf(x, k) for k, x in enumerate(img)]
+
+    def __str__(self) -> str:
+        return (
+            "RandCrop3DByPosNegLabel("
+            f"size={self.requested_size}, pos_ratio={self.pos_ratio:.3f}, "
+            f"image_threshold={self.image_threshold}, allow_smaller={self.allow_smaller})"
+        )
 
 
 class RandomRotation(Base):
@@ -257,7 +512,7 @@ def get_train_transforms(crop_size: int = 80) -> Compose:
     """
     return Compose(
         [
-            RandCrop3D(size=(crop_size, crop_size, crop_size)),
+            RandCrop3DByPosNegLabel(size=(crop_size, crop_size, crop_size)),
             RandomRotation(angle_spectrum=10),
             RandomFlip(),
             RandomIntensityChange(factor=(0.1, 0.1)),

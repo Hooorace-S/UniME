@@ -12,7 +12,8 @@ class ConvBlock(nn.Module):
         out_channels: int,
         kernel_size: int = 3,
         stride: int = 1,
-        padding: int = 1
+        padding: int = 1,
+        norm_affine: bool = False,
     ) -> None:
         super().__init__()
         self.block = nn.Sequential(
@@ -21,7 +22,7 @@ class ConvBlock(nn.Module):
                 out_channels=out_channels,
                 kernel_size=kernel_size, stride=stride, padding=padding, padding_mode='reflect', bias=False
             ),
-            nn.InstanceNorm3d(num_features=out_channels),
+            nn.InstanceNorm3d(num_features=out_channels, affine=norm_affine),
             nn.GELU()
         )
 
@@ -45,6 +46,10 @@ class ECABlock(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool3d(1)
         self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
         self.sigmoid = nn.Sigmoid()
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.conv.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -69,7 +74,7 @@ class ECABlock(nn.Module):
         y = self.sigmoid(y).unsqueeze(-1).unsqueeze(-1)  # [B, C, D, 1, 1]
 
         # Reweight
-        return x * y.expand_as(x)
+        return x * (2.0 * y).expand_as(x)
 
 
 class FusionBlock(nn.Module):

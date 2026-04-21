@@ -42,7 +42,7 @@ python main.py \
   --compile \
   --base_lr 3e-4 \
   --layer_decay 0.75 \
-  --iter_per_epoch 300 \
+  --iter_per_epoch 250 \
   --num_epochs 600 \
   --crop_size 96 \
   --seed 42 \

@@ -33,7 +33,7 @@ class CNNEncoder(nn.Module):
         return nn.ModuleDict({
             'down': ConvBlock(in_ch, out_ch, stride=stride),
             'convnext': ConvBlock(out_ch, out_ch),
-            'conv': ConvBlock(out_ch, out_ch)
+            'conv': ConvBlock(out_ch, out_ch, norm_affine=True)
         })
 
     def _stage_forward(self, stage: nn.ModuleDict, x: torch.Tensor) -> torch.Tensor:

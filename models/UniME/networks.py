@@ -1,3 +1,4 @@
+import copy
 import os
 from typing import Dict, Optional, Tuple, Union
 
@@ -16,6 +17,11 @@ from models.UniME.configs import (
 )
 from models.UniME.decoder import CNNDecoder
 from models.UniME.encoder import CNNEncoder
+from models.UniME.initialization import (
+    initialize_auxiliary_regularizer,
+    initialize_cnn_decoder,
+    initialize_cnn_encoder,
+)
 from models.UniME.mask import MaskModal
 from models.UniME.regularizer import AuxiliaryRegularizer
 from models.UniME.wrapper import UniEncoderWrapper
@@ -141,6 +147,10 @@ class UniMEModel(nn.Module):
         self.masker = MaskModal()
         self.default_layer_decay: float = LAYER_DECAY_DEFAULT
         self.layer_decay = layer_decay
+        self.initialize_scratch_modules(
+            symmetric_modality_init=True,
+            head_init_std=1e-3,
+        )
 
     @property
     def layer_decay(self) -> Optional[float]:
@@ -163,6 +173,36 @@ class UniMEModel(nn.Module):
     @property
     def layerwise_lr_decay_enabled(self) -> bool:
         return self.layer_decay is not None and self.uni_encoder.mode == "finetune"
+
+    def initialize_scratch_modules(
+        self,
+        *,
+        symmetric_modality_init: bool = True,
+        head_init_std: float = 1e-3,
+    ) -> None:
+        """
+        Initialize UniME scratch modules without touching the possibly pretrained Uni-Encoder.
+        """
+        if symmetric_modality_init:
+            initialize_cnn_encoder(self.flair_encoder)
+            base_state = copy.deepcopy(self.flair_encoder.state_dict())
+            self.t1ce_encoder.load_state_dict(base_state)
+            self.t1_encoder.load_state_dict(base_state)
+            self.t2_encoder.load_state_dict(base_state)
+        else:
+            initialize_cnn_encoder(self.flair_encoder)
+            initialize_cnn_encoder(self.t1ce_encoder)
+            initialize_cnn_encoder(self.t1_encoder)
+            initialize_cnn_encoder(self.t2_encoder)
+
+        initialize_cnn_decoder(
+            self.decoder_fuse,
+            head_init_std=head_init_std,
+        )
+        initialize_auxiliary_regularizer(
+            self.regularizer,
+            head_init_std=head_init_std,
+        )
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> Union[torch.Tensor, Tuple]:
         flair_x1, flair_x2, flair_x3, flair_x4 = self.flair_encoder(x[:, 0:1, ...])
