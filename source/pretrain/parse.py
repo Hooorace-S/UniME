@@ -223,7 +223,7 @@ class PretrainConfig:
         # masking
         p.add_argument('--mask_ratio', type=float, default=0.75)
         p.add_argument('--num_mask_modalities', type=int, default=1)
-        p.add_argument('--original_shape', type=int, nargs=3, default=(180, 210, 160))
+        p.add_argument('--original_shape', type=int, nargs=3, default=(160, 180, 210))
 
         # loss
         p.add_argument('--regulization_rate', type=float, default=0.005)
