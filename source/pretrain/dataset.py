@@ -42,7 +42,7 @@ def crop3d_with_loc(volume: np.ndarray, transform: Compose) -> tuple[np.ndarray,
             if isinstance(op, RandCrop3D) and op.start is not None:
                 sh, sw, sd = op.start
                 kh, kw, kd = op.size
-                loc = ((sh, sh + kh), (sw, sw + kw), (sd, sd + kd))
+                loc = ((sd, sd + kd), (sh, sh + kh), (sw, sw + kw))
                 break
 
     return cropped_volume, loc

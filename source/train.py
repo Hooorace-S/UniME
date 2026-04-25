@@ -270,7 +270,7 @@ def train_brats(
 
             # Forward pass with AMP
             with accelerator.autocast():
-                fusion_output, deep_supervision_outputs, auxiliary_outputs = model(images, masks)
+                fusion_output, auxiliary_outputs, deep_supervision_outputs = model(images, masks)
 
                 # Calculate losses
                 loss_fusion, loss_deep, loss_aux = loss_function(
@@ -374,7 +374,7 @@ def train_brats(
         avg_losses = {
             key: float(
                 (
-                    cast(torch.Tensor, accelerator.reduce(epoch_losses['total'], reduction="sum")) / reduced_batch_count
+                    cast(torch.Tensor, accelerator.reduce(value, reduction="sum")) / reduced_batch_count
                 ).item()
             )
             for key, value in epoch_losses.items()
