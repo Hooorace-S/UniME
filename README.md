@@ -2,12 +2,15 @@
 
 Official implementation of **Uni-Encoder Meets Multi-Encoders: Representation Before Fusion for Brain Tumor Segmentation with Missing Modalities**.
 
+---
 <div align="center">
-  <img src="figure/fig2.png" alt="Overview" width="80%">
+  <img src="figure/CVPR-UniME-Poster.jpg" alt="UniME Poster" width="100%">
 </div>
 
+***UniME Overview.** Stage 1 pretrains a single ViT Uni-Encoder with masked self-supervision and a lightweight auxiliary decoder (discarded after pretraining). Stage 2 introduces parallel modality-specific encoders and performs multi-scale feature fusion for segmentation.*
 
-***UniME overview.** Stage 1 pretrains a single ViT Uni-Encoder with masked self-supervision and a lightweight auxiliary decoder (discarded after pretraining). Stage 2 introduces parallel modality-specific encoders and performs multi-scale feature fusion for segmentation. <img src="figure/icon/archive.png" alt="Archive" width="16"/> marks modules initialized from pretrained weights, while <img src="figure/icon/flame.png" alt="Flame" width="16"/> indicates modules trained from scratch.*
+---
+
 
 This repository now ships multiple released model scales in addition to the original paper configuration. `UniME` with `UniEncoder` corresponds to the original setting, while `UniMEBase`, `UniMESmall`, `UniMETiny`, and `UniMENano` are released scale variants with tuned training scripts and hyperparameters.
 
